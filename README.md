@@ -26,11 +26,14 @@
    ```bash
    ./install.sh
    ```
+   *Installs to `~/.local/bin`. Ensure this directory is in your `PATH`.*
    
    Or manually:
    ```bash
    pip3 install -r requirements.txt
    chmod +x gcast
+   mkdir -p ~/.local/bin
+   cp gcast ~/.local/bin/
    ```
 
 ## Usage
@@ -38,7 +41,7 @@
 ### 1. List Devices
 Find all available devices on your network.
 ```bash
-./gcast list
+gcast list
 ```
 *Output:*
 ```text
@@ -55,30 +58,30 @@ Play a default test sound or a custom URL.
 
 **Interactive Mode** (Prompts you to select a device):
 ```bash
-./gcast play
+gcast play
 ```
 
 **Targeted Playback**:
 ```bash
-./gcast play --device "Living Room" --volume 0.5
+gcast play --device "Living Room" --volume 0.5
 ```
 
 **Custom URL**:
 ```bash
-./gcast play --device "Living Room" --url "http://example.com/music.mp3"
+gcast play --device "Living Room" --url "http://example.com/music.mp3"
 ```
 
 ### 3. Text-to-Speech (Say)
 Make your device speak!
 ```bash
-./gcast say --device "Living Room" --message "Dinner is ready!" --volume 0.8
+gcast say --device "Living Room" --message "Dinner is ready!" --volume 0.8
 ```
 *Note: This generates an audio file using macOS `say`, converts it to MP3 with `ffmpeg`, hosts it on a temporary local web server, and streams it to the device.*
 
 ### 4. Stop Playback
 Stop whatever is playing.
 ```bash
-./gcast stop --device "Living Room"
+gcast stop --device "Living Room"
 ```
 
 ## Options

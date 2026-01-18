@@ -333,11 +333,11 @@ def handle_stop(args):
 
 def main():
     example_usage = """examples:
-  ./discover_cast.py list
-  ./discover_cast.py play --device "Snowy"
-  ./discover_cast.py play --device "Living Room" --url http://example.com/song.mp3
-  ./discover_cast.py stop --device "Snowy"
-  ./discover_cast.py say --device "Snowy" --message "Hello world" --volume 0.5
+  gcast list
+  gcast play --device "Snowy"
+  gcast play --device "Living Room" --url http://example.com/song.mp3
+  gcast stop --device "Snowy"
+  gcast say --device "Snowy" --message "Hello world" --volume 0.5
 """
     parser = argparse.ArgumentParser(
         description="Google Cast Discovery & Control Tool",

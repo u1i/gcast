@@ -11,4 +11,27 @@ else
 fi
 
 chmod +x gcast
-echo "Done! You can now run './gcast'"
+
+INSTALL_DIR="$HOME/.local/bin"
+
+echo "Installing to $INSTALL_DIR (user mode)..."
+mkdir -p "$INSTALL_DIR"
+
+if cp gcast "$INSTALL_DIR/gcast"; then
+    echo "Successfully installed 'gcast' to $INSTALL_DIR"
+    
+    # Check if INSTALL_DIR is in PATH
+    case ":$PATH:" in
+        *":$INSTALL_DIR:"*) 
+            echo "You can now run 'gcast' from anywhere."
+            ;;
+        *) 
+            echo "WARNING: $INSTALL_DIR is not in your PATH."
+            echo "Add the following to your shell config (.zshrc, .bashrc, etc.):"
+            echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+            echo "Then restart your terminal."
+            ;;
+    esac
+else
+    echo "Error: Could not copy to $INSTALL_DIR"
+fi
