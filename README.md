@@ -1,6 +1,6 @@
 # gcast: Google Cast Discovery & Control CLI
 
-`gcast` is a simple yet powerful command-line tool written in Python to discover, control, and send text-to-speech (TTS) messages to Google Cast devices (Chromecasts, Nest Audio, Google Home, etc.) on your local network.
+`gcast` is a simple yet powerful command-line tool written in Python to discover, control, play media, and send text-to-speech (TTS) messages to Google Cast devices (Chromecasts, Nest Audio, Google Home, etc.) on your local network.
 
 ## Features
 
