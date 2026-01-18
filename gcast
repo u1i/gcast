@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+import http.server
+import socketserver
+import threading
+import subprocess
+import os
+import socket
+import argparse
+import json
+import logging
+import sys
+import time
+import mimetypes
+import pychromecast
+
+__version__ = "1.0.0"
+
+DEFAULT_MEDIA_URL = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+
+def get_local_ip():
+    """
+    Attempts to determine the local IP address reachable by peers.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # doesn't even have to be reachable
+        s.connect(('10.255.255.255', 1))
+        IP = s.getsockname()[0]
+    except Exception:
+        IP = '127.0.0.1'
+    finally:
+        s.close()
+    return IP
+
+def start_temp_server(file_path, port=0):
+    """
+    Starts a temporary HTTP server serving the directory of file_path.
+    Returns (server_object, port).
+    """
+    directory = os.path.dirname(os.path.abspath(file_path))
+    filename = os.path.basename(file_path)
+    
+    class SingleFileHandler(http.server.SimpleHTTPRequestHandler):
+        def translate_path(self, path):
+            # Force mapping the requested path to our specific file or directory
+            return super().translate_path(path)
+        
+        def list_directory(self, path):
+             return None # Disable directory listing
+
+    # Change to directory to serve files easily
+    # Note: Changing CWD in a threaded app is risky, but for this simple tool it's okay-ish. 
+    # Better to use a custom handler that serves from a specific path without changing CWD.
+    
+    # Simpler approach: serve the current CWD where the file is created.
+    # We will assume discover_cast.py runs in a place where we can write "tts.m4a"
+    
+    handler = http.server.SimpleHTTPRequestHandler
+    httpd = socketserver.TCPServer(("", port), handler)
+    actual_port = httpd.server_address[1]
+    
+    server_thread = threading.Thread(target=httpd.serve_forever)
+    server_thread.daemon = True
+    server_thread.start()
+    
+    return httpd, actual_port
+
+def handle_say(args):
+    chromecasts, browser = discover_devices(args.timeout, args.verbose)
+    if not chromecasts:
+        print("No devices found.")
+        browser.stop_discovery()
+        return
+
+    target = select_device(chromecasts, args.device)
+    if not target:
+        print("No device selected.")
+        browser.stop_discovery()
+        return
+
+    # Generate TTS file
+    # We will generate AIFF first, then convert to MP3 using ffmpeg for best compatibility
+    tts_aiff = "tts_message.aiff"
+    tts_mp3 = "tts_message.mp3"
+    
+    try:
+        if args.verbose:
+            print(f"Generating TTS audio for: '{args.message}'")
+        
+        # 1. Generate AIFF
+        subprocess.run(["say", "-o", tts_aiff, args.message], check=True)
+        
+        if not os.path.exists(tts_aiff):
+            print("Error: Failed to generate TTS AIFF file.")
+            browser.stop_discovery()
+            return
+
+        # 2. Convert to MP3
+        # -y to overwrite, -ac 2 for stereo (optional), -ab 192k for quality
+        subprocess.run(["ffmpeg", "-y", "-i", tts_aiff, "-acodec", "libmp3lame", "-ab", "192k", tts_mp3], 
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+        if not os.path.exists(tts_mp3):
+            print("Error: Failed to convert TTS to MP3.")
+            browser.stop_discovery()
+            return
+            
+        # Start temp server
+        httpd, port = start_temp_server(tts_mp3)
+        local_ip = get_local_ip()
+        url = f"http://{local_ip}:{port}/{tts_mp3}"
+        
+        if args.verbose:
+            print(f"Serving TTS at {url}")
+
+        if args.verbose:
+            print(f"Connecting to {target.name}...")
+        target.wait()
+        
+        if args.volume is not None:
+             target.set_volume(args.volume)
+
+        mc = target.media_controller
+        mc.play_media(url, 'audio/mp3')
+        mc.block_until_active()
+        print(f"Speaking on {target.name}...")
+        
+        # Wait a bit for playback to likely finish (calculating duration is harder without probing)
+        # We can poll status
+        print("Waiting for playback...")
+        time.sleep(2) # Connect delay
+        
+        start_time = time.time()
+        while True:
+            time.sleep(1)
+            # Stop if we've waited too long (e.g. 20s for a short sentence)
+            if time.time() - start_time > 20:
+                print("Timeout waiting for playback to finish.")
+                break
+                
+            # If we are IDLE after having started, we are likely done.
+            if mc.status.player_state == 'IDLE':
+                # Double check we aren't just starting up
+                if time.time() - start_time > 5:
+                    print("Playback finished.")
+                    break
+
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        # Cleanup
+        if 'httpd' in locals():
+            httpd.shutdown()
+        if os.path.exists(tts_aiff):
+            os.remove(tts_aiff)
+        if os.path.exists(tts_mp3):
+            os.remove(tts_mp3)
+        browser.stop_discovery()
+
+def get_device_info(chromecast):
+    """
+    Extracts relevant info from a Chromecast object.
+    """
+    # Defensive programming for different pychromecast versions
+    try:
+        cast_info = chromecast.cast_info
+        friendly_name = cast_info.friendly_name
+        model_name = cast_info.model_name
+        manufacturer = cast_info.manufacturer
+        host = cast_info.host
+        port = cast_info.port
+        uuid = str(cast_info.uuid)
+    except AttributeError:
+        # Fallback for older structures if cast_info isn't direct
+        friendly_name = chromecast.name
+        model_name = chromecast.model_name
+        manufacturer = "Unknown"
+        host = chromecast.host
+        port = chromecast.port
+        uuid = str(chromecast.uuid)
+        
+    return {
+        "friendly_name": friendly_name,
+        "model_name": model_name,
+        "manufacturer": manufacturer,
+        "ip_address": host,
+        "port": port,
+        "uuid": uuid,
+        "cast_type": chromecast.cast_type
+    }
+
+def discover_devices(timeout, verbose=False):
+    if verbose:
+        print(f"Discovering Cast devices (timeout: {timeout}s)...")
+    
+    chromecasts, browser = pychromecast.get_chromecasts(timeout=timeout)
+    # Don't stop discovery immediately if we intend to use the devices,
+    # but for pure listing we could. However, keeping the browser logic consistent is safer.
+    return chromecasts, browser
+
+def select_device(chromecasts, target_name=None):
+    """
+    Selects a device from the list. 
+    If target_name is provided, tries to match friendly_name or UUID.
+    If not, prompts user for selection.
+    """
+    if not chromecasts:
+        return None
+        
+    if target_name:
+        target_lower = target_name.lower()
+        for cc in chromecasts:
+            if target_lower in cc.name.lower() or target_lower in str(cc.uuid).lower():
+                return cc
+        print(f"Device matching '{target_name}' not found.")
+        return None
+
+    # Interactive selection
+    print("\nAvailable Devices:")
+    for idx, cc in enumerate(chromecasts):
+        print(f"{idx + 1}. {cc.name} ({cc.model_name}) - {cc.host}")
+    
+    while True:
+        try:
+            choice = input("\nSelect device number (q to quit): ")
+            if choice.lower() == 'q':
+                return None
+            idx = int(choice) - 1
+            if 0 <= idx < len(chromecasts):
+                return chromecasts[idx]
+            else:
+                print("Invalid number.")
+        except ValueError:
+            print("Please enter a number.")
+
+def handle_list(args):
+    chromecasts, browser = discover_devices(args.timeout, args.verbose)
+    browser.stop_discovery()
+    
+    device_list = [get_device_info(cc) for cc in chromecasts]
+    
+    if args.json:
+        print(json.dumps(device_list, indent=2))
+    else:
+        if not device_list:
+            print("No devices found.")
+            return
+
+        print(f"Found {len(device_list)} device(s):")
+        print("-" * 40)
+        for device in device_list:
+            print(f"Name: {device['friendly_name']}")
+            print(f"Model: {device['model_name']} ({device['manufacturer']})")
+            print(f"IP: {device['ip_address']}:{device['port']}")
+            print(f"UUID: {device['uuid']}")
+            print("-" * 40)
+
+def handle_play(args):
+    chromecasts, browser = discover_devices(args.timeout, args.verbose)
+    if not chromecasts:
+        print("No devices found.")
+        browser.stop_discovery()
+        return
+
+    target = select_device(chromecasts, args.device)
+    if not target:
+        print("No device selected.")
+        browser.stop_discovery()
+        return
+
+    try:
+        if args.verbose:
+            print(f"Connecting to {target.name}...")
+        target.wait()
+        
+        if args.volume is not None:
+             if args.verbose:
+                print(f"Setting volume to {args.volume}...")
+             target.set_volume(args.volume)
+
+        content_type, _ = mimetypes.guess_type(args.url)
+        if not content_type:
+            content_type = 'audio/mp3'
+        
+        if args.verbose:
+            print(f"Playing {args.url} ({content_type})")
+            
+        mc = target.media_controller
+        mc.play_media(args.url, content_type)
+        mc.block_until_active()
+        print(f"Playing on {target.name}!")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        browser.stop_discovery()
+
+def handle_stop(args):
+    chromecasts, browser = discover_devices(args.timeout, args.verbose)
+    if not chromecasts:
+        print("No devices found.")
+        browser.stop_discovery()
+        return
+
+    target = select_device(chromecasts, args.device)
+    if not target:
+        print("No device selected.")
+        browser.stop_discovery()
+        return
+        
+    try:
+        print(f"Connecting to {target.name}...")
+        target.wait()
+        
+        # Quit app is the most effective way to stop everything (returns to home screen)
+        # We try this first.
+        try:
+            target.quit_app()
+            print(f"Sent 'Quit App' to {target.name}.")
+        except Exception as e:
+            print(f"Warning: quit_app failed ({e})")
+
+        # Also try to specifically stop media if possible, but don't fail hard
+        try:
+            target.media_controller.stop()
+        except Exception:
+            pass # Ignore media stop errors if quit_app was sent or if no media session
+            
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        browser.stop_discovery()
+
+def main():
+    example_usage = """examples:
+  ./discover_cast.py list
+  ./discover_cast.py play --device "Snowy"
+  ./discover_cast.py play --device "Living Room" --url http://example.com/song.mp3
+  ./discover_cast.py stop --device "Snowy"
+  ./discover_cast.py say --device "Snowy" --message "Hello world" --volume 0.5
+"""
+    parser = argparse.ArgumentParser(
+        description="Google Cast Discovery & Control Tool",
+        epilog=example_usage,
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    
+    # List command
+    list_parser = subparsers.add_parser("list", help="List discovered devices")
+    list_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
+    list_parser.add_argument("--json", action="store_true", help="Output JSON")
+
+    # Play command
+    play_parser = subparsers.add_parser("play", help="Play audio on a device")
+    play_parser.add_argument("--device", type=str, help="Target device name (or part of it)")
+    play_parser.add_argument("--url", type=str, default=DEFAULT_MEDIA_URL, help="Media URL to play")
+    play_parser.add_argument("--volume", type=float, help="Set volume (0.0 - 1.0)")
+    play_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
+
+    # Stop command
+    stop_parser = subparsers.add_parser("stop", help="Stop playback on a device")
+    stop_parser.add_argument("--device", type=str, help="Target device name (or part of it)")
+    stop_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
+
+    # Say command
+    say_parser = subparsers.add_parser("say", help="Speak text on a device")
+    say_parser.add_argument("--device", type=str, help="Target device name (or part of it)")
+    say_parser.add_argument("--message", type=str, required=True, help="Text to speak")
+    say_parser.add_argument("--volume", type=float, help="Set volume (0.0 - 1.0)")
+    say_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
+
+    args = parser.parse_args()
+
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+
+    if args.command == "list":
+        handle_list(args)
+    elif args.command == "play":
+        handle_play(args)
+    elif args.command == "stop":
+        handle_stop(args)
+    elif args.command == "say":
+        handle_say(args)
+    else:
+        parser.print_help()
+
+if __name__ == "__main__":
+    main()
