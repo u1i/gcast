@@ -84,6 +84,19 @@ Stop whatever is playing.
 gcast stop --device "Living Room"
 ```
 
+### 5. Volume Control
+Check or set the volume of a device (0.0 to 1.0).
+
+**Check Current Volume**:
+```bash
+gcast volume --device "Living Room"
+```
+
+**Set Volume**:
+```bash
+gcast volume --device "Living Room" --set 0.5
+```
+
 ## Options
 - `--verbose`: Enable detailed logging for debugging.
 - `--version`: Show version number.

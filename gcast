@@ -331,6 +331,45 @@ def handle_stop(args):
     finally:
         browser.stop_discovery()
 
+def handle_volume(args):
+    chromecasts, browser = discover_devices(args.timeout, args.verbose)
+    if not chromecasts:
+        print("No devices found.")
+        browser.stop_discovery()
+        return
+
+    target = select_device(chromecasts, args.device)
+    if not target:
+        print("No device selected.")
+        browser.stop_discovery()
+        return
+
+    try:
+        if args.verbose:
+            print(f"Connecting to {target.name}...")
+        target.wait()
+        
+        # If --set is provided, change the volume
+        if args.set is not None:
+            if args.verbose:
+                print(f"Setting volume to {args.set}...")
+            target.set_volume(args.set)
+            # Give it a moment to apply before reading back
+            time.sleep(1)
+            # wait for status update might be needed or we just pull it
+            target.wait()
+            
+        current_vol = target.status.volume_level
+        if current_vol is not None:
+            print(f"Volume for {target.name} is {current_vol:.2f} ({int(current_vol * 100)}%)")
+        else:
+            print(f"Could not read volume for {target.name}.")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        browser.stop_discovery()
+
 def main():
     example_usage = """examples:
   gcast list
@@ -338,6 +377,8 @@ def main():
   gcast play --device "Living Room" --url http://example.com/song.mp3
   gcast stop --device "Snowy"
   gcast say --device "Snowy" --message "Hello world" --volume 0.5
+  gcast volume --device "Snowy"
+  gcast volume --device "Snowy" --set 0.6
 """
     parser = argparse.ArgumentParser(
         description="Google Cast Discovery & Control Tool",
@@ -373,6 +414,12 @@ def main():
     say_parser.add_argument("--volume", type=float, help="Set volume (0.0 - 1.0)")
     say_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
 
+    # Volume command
+    volume_parser = subparsers.add_parser("volume", help="Get or set device volume")
+    volume_parser.add_argument("--device", type=str, help="Target device name (or part of it)")
+    volume_parser.add_argument("--set", type=float, help="Set volume (0.0 - 1.0)")
+    volume_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
+
     args = parser.parse_args()
 
     if args.verbose:
@@ -386,6 +433,8 @@ def main():
         handle_stop(args)
     elif args.command == "say":
         handle_say(args)
+    elif args.command == "volume":
+        handle_volume(args)
     else:
         parser.print_help()
 
