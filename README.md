@@ -97,6 +97,31 @@ gcast volume --device "Living Room"
 gcast volume --device "Living Room" --set 0.5
 ```
 
+### 6. Show Status
+See what is currently playing on a device.
+```bash
+gcast status --device "Living Room"
+```
+*Output:*
+```text
+Status for Living Room:
+----------------------------------------
+State:     PLAYING
+App:       YouTube
+Title:     Lo-fi Hip Hop Radio
+Artist:    Lofi Girl
+Progress:  [==========----------] 50.0% (120s / 240s)
+Volume:    45%
+----------------------------------------
+```
+
+### 7. Pause & Resume
+Control playback without stopping the app.
+```bash
+gcast pause --device "Living Room"
+gcast resume --device "Living Room"
+```
+
 ## Options
 - `--verbose`: Enable detailed logging for debugging.
 - `--version`: Show version number.

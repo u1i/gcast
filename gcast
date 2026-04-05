@@ -172,12 +172,12 @@ def get_device_info(chromecast):
         uuid = str(cast_info.uuid)
     except AttributeError:
         # Fallback for older structures if cast_info isn't direct
-        friendly_name = chromecast.name
-        model_name = chromecast.model_name
-        manufacturer = "Unknown"
-        host = chromecast.host
-        port = chromecast.port
-        uuid = str(chromecast.uuid)
+        friendly_name = getattr(chromecast, 'name', 'Unknown Device')
+        model_name = getattr(chromecast, 'model_name', 'Unknown Model')
+        manufacturer = getattr(chromecast, 'manufacturer', 'Unknown')
+        host = getattr(chromecast, 'host', 'Unknown IP')
+        port = getattr(chromecast, 'port', 8009)
+        uuid = str(getattr(chromecast, 'uuid', 'Unknown-UUID'))
         
     return {
         "friendly_name": friendly_name,
@@ -210,7 +210,9 @@ def select_device(chromecasts, target_name=None):
     if target_name:
         target_lower = target_name.lower()
         for cc in chromecasts:
-            if target_lower in cc.name.lower() or target_lower in str(cc.uuid).lower():
+            name = getattr(cc, 'name', '') or ''
+            uuid = str(getattr(cc, 'uuid', '')) or ''
+            if target_lower in name.lower() or target_lower in uuid.lower():
                 return cc
         print(f"Device matching '{target_name}' not found.")
         return None
@@ -218,7 +220,16 @@ def select_device(chromecasts, target_name=None):
     # Interactive selection
     print("\nAvailable Devices:")
     for idx, cc in enumerate(chromecasts):
-        print(f"{idx + 1}. {cc.name} ({cc.model_name}) - {cc.host}")
+        # Determine display info defensively
+        name = getattr(cc, 'name', 'Unknown')
+        model = getattr(cc, 'model_name', 'Unknown')
+        host = 'Unknown IP'
+        if hasattr(cc, 'cast_info') and cc.cast_info:
+             host = getattr(cc.cast_info, 'host', 'Unknown IP')
+        elif hasattr(cc, 'host'):
+             host = cc.host
+             
+        print(f"{idx + 1}. {name} ({model}) - {host}")
     
     while True:
         try:
@@ -331,6 +342,58 @@ def handle_stop(args):
     finally:
         browser.stop_discovery()
 
+def handle_pause(args):
+    chromecasts, browser = discover_devices(args.timeout, args.verbose)
+    if not chromecasts:
+        print("No devices found.")
+        browser.stop_discovery()
+        return
+
+    target = select_device(chromecasts, args.device)
+    if not target:
+        print("No device selected.")
+        browser.stop_discovery()
+        return
+
+    try:
+        target_name = getattr(target, 'name', 'Device')
+        print(f"Connecting to {target_name}...")
+        target.wait()
+        
+        target.media_controller.pause()
+        print(f"Paused on {target_name}.")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        browser.stop_discovery()
+
+def handle_resume(args):
+    chromecasts, browser = discover_devices(args.timeout, args.verbose)
+    if not chromecasts:
+        print("No devices found.")
+        browser.stop_discovery()
+        return
+
+    target = select_device(chromecasts, args.device)
+    if not target:
+        print("No device selected.")
+        browser.stop_discovery()
+        return
+
+    try:
+        target_name = getattr(target, 'name', 'Device')
+        print(f"Connecting to {target_name}...")
+        target.wait()
+        
+        target.media_controller.play()
+        print(f"Resumed on {target_name}.")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        browser.stop_discovery()
+
 def handle_volume(args):
     chromecasts, browser = discover_devices(args.timeout, args.verbose)
     if not chromecasts:
@@ -360,10 +423,90 @@ def handle_volume(args):
             target.wait()
             
         current_vol = target.status.volume_level
+        name = getattr(target, 'name', 'Device')
         if current_vol is not None:
-            print(f"Volume for {target.name} is {current_vol:.2f} ({int(current_vol * 100)}%)")
+            print(f"Volume for {name} is {current_vol:.2f} ({int(current_vol * 100)}%)")
         else:
-            print(f"Could not read volume for {target.name}.")
+            print(f"Could not read volume for {name}.")
+            
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        browser.stop_discovery()
+
+def handle_status(args):
+    chromecasts, browser = discover_devices(args.timeout, args.verbose)
+    if not chromecasts:
+        print("No devices found.")
+        browser.stop_discovery()
+        return
+
+    target = select_device(chromecasts, args.device)
+    if not target:
+        print("No device selected.")
+        browser.stop_discovery()
+        return
+
+    try:
+        target_name = getattr(target, 'name', 'Device')
+        if args.verbose:
+            print(f"Connecting to {target_name}...")
+        target.wait()
+        
+        mc = target.media_controller
+        # Force status update and wait a bit for response
+        mc.update_status()
+        time.sleep(0.5) 
+        
+        status = mc.status
+        
+        print(f"\nStatus for {target_name}:")
+        print("-" * 40)
+        
+        player_state = getattr(status, 'player_state', 'UNKNOWN')
+        print(f"State:     {player_state}")
+        
+        # App info (from cast status, not media status)
+        cast_status = target.status
+        display_name = getattr(cast_status, 'display_name', None)
+        if display_name:
+            print(f"App:       {display_name}")
+            
+        # Media info
+        if player_state != 'IDLE' or status.content_id:
+            if hasattr(status, 'title') and status.title:
+                print(f"Title:     {status.title}")
+            if hasattr(status, 'artist') and status.artist:
+                print(f"Artist:    {status.artist}")
+            if hasattr(status, 'album_name') and status.album_name:
+                print(f"Album:     {status.album_name}")
+            
+            # Content ID/URL
+            if status.content_id:
+                print(f"Content:   {status.content_id}")
+            
+            # Progress
+            if hasattr(status, 'duration') and status.duration:
+                curr = getattr(status, 'current_time', 0) or 0
+                dur = status.duration
+                perc = (curr / dur) * 100
+                
+                # Simple progress bar
+                bar_len = 20
+                filled = int(bar_len * (curr / dur))
+                bar = "=" * filled + "-" * (bar_len - filled)
+                
+                print(f"Progress:  [{bar}] {perc:.1f}% ({int(curr)}s / {int(dur)}s)")
+            elif getattr(status, 'current_time', None):
+                print(f"Time:      {int(status.current_time)}s")
+        elif not display_name or display_name == "Backdrop":
+            print("Nothing is currently playing.")
+            
+        # Volume
+        vol = getattr(cast_status, 'volume_level', 0)
+        muted = " (MUTED)" if getattr(cast_status, 'volume_muted', False) else ""
+        print(f"Volume:    {int(vol * 100)}%{muted}")
+        print("-" * 40)
             
     except Exception as e:
         print(f"Error: {e}")
@@ -379,6 +522,9 @@ def main():
   gcast say --device "Snowy" --message "Hello world" --volume 0.5
   gcast volume --device "Snowy"
   gcast volume --device "Snowy" --set 0.6
+  gcast status --device "Snowy"
+  gcast pause --device "Snowy"
+  gcast resume --device "Snowy"
 """
     parser = argparse.ArgumentParser(
         description="Google Cast Discovery & Control Tool",
@@ -420,6 +566,21 @@ def main():
     volume_parser.add_argument("--set", type=float, help="Set volume (0.0 - 1.0)")
     volume_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
 
+    # Status command
+    status_parser = subparsers.add_parser("status", help="Show current playback status")
+    status_parser.add_argument("--device", type=str, help="Target device name (or part of it)")
+    status_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
+
+    # Pause command
+    pause_parser = subparsers.add_parser("pause", help="Pause playback on a device")
+    pause_parser.add_argument("--device", type=str, help="Target device name (or part of it)")
+    pause_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
+
+    # Resume command
+    resume_parser = subparsers.add_parser("resume", help="Resume playback on a device")
+    resume_parser.add_argument("--device", type=str, help="Target device name (or part of it)")
+    resume_parser.add_argument("--timeout", type=int, default=5, help="Discovery timeout")
+
     args = parser.parse_args()
 
     if args.verbose:
@@ -435,6 +596,12 @@ def main():
         handle_say(args)
     elif args.command == "volume":
         handle_volume(args)
+    elif args.command == "status":
+        handle_status(args)
+    elif args.command == "pause":
+        handle_pause(args)
+    elif args.command == "resume":
+        handle_resume(args)
     else:
         parser.print_help()
 
